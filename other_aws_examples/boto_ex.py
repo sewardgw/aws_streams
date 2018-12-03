@@ -5,10 +5,7 @@ import pandas as pd
 import numpy as np
 glue = boto3.client(
             'glue',
-            region_name='us-west-2',
-            # Hard coded strings as credentials, not recommended.
-            aws_access_key_id='AKIAJR2EUO62XEZRJ27Q',
-            aws_secret_access_key='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'
+            region_name='us-west-2'
         )
 
 tables = glue.get_tables(DatabaseName='cf_data')
@@ -18,10 +15,7 @@ for r in raw:
 
 fh = boto3.client(
             'firehose',
-            region_name='us-west-2',
-            # Hard coded strings as credentials, not recommended.
-            aws_access_key_id='AKIAJR2EUO62XEZRJ27Q',
-            aws_secret_access_key='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'
+            region_name='us-west-2'
         )
 
 stream_desc = fh.describe_delivery_stream(DeliveryStreamName="pl-deploy-KinesisToS3FirehoseResource-dev")
@@ -138,10 +132,7 @@ a = glue.get_partitions(DatabaseName='cf_data', TableName='bball_user')
 
 
 s3 = boto3.client(
-            's3',
-            # Hard coded strings as credentials, not recommended.
-            aws_access_key_id='AKIAJR2EUO62XEZRJ27Q',
-            aws_secret_access_key='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'
+            's3'
         )
 
 
@@ -164,9 +155,7 @@ s3.get_bucket_notification_configuration(
 
 
 sm = boto3.client('sagemaker-runtime',
-                  region_name='us-west-2',
-                  aws_access_key_id='AKIAJR2EUO62XEZRJ27Q',
-                  aws_secret_access_key='JkouGpEJS9mNE4NGxfejDyfGjuibM7SN8mpRfLPX'
+                  region_name='us-west-2'
 )
 custom_attributes = "custom_attribute_string"  # An example of a trace ID.
 endpoint_name = "DEMO-XGBoostEndpoint-2018-11-22-16-21-28"                                       # Your endpoint name.
@@ -190,16 +179,12 @@ print(response['CustomAttributes'])
 """
 Athena query to get feature calculations
 """
-s3 = boto3.client('s3',
-                  aws_access_key_id='AKIAJR2EUO62XEZRJ27Q',
-                  aws_secret_access_key='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'
+s3 = boto3.client('s3'
 )
 
 
 athena = boto3.client('athena',
-                  region_name='us-west-2',
-                  aws_access_key_id='AKIAJR2EUO62XEZRJ27Q',
-                  aws_secret_access_key='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'
+                  region_name='us-west-2')
 )
 
 BUCKET = 'aws-athena-query-results-652741540129-us-west-2'
@@ -294,7 +279,7 @@ df2 = df.merge(data, on='name', how='left').fillna(0)
 final_table = df2[['user_age_at_post', 'loc_is_major_city', 'num_spacs_in_name', 'num_tweets']]
 
 
-runtime= boto3.client('runtime.sagemaker', region_name='us-west-2', aws_access_key_id='AKIAJR2EUO62XEZRJ27Q', aws_secret_access_key='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')
+runtime= boto3.client('runtime.sagemaker', region_name='us-west-2')
 
 # Simple function to create a csv from our numpy array
 
