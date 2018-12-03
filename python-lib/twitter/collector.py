@@ -8,10 +8,10 @@ import sys
 sys.path.append('.')
 from kinesis import KinesisBasketballStreamer as KBS
 
-consumer_key = "tZ5LF2MjGS1epE4V7wknCVzih"
-consumer_secret = "0pqqFBu9cBnZlxhL9IXdq8kkCQhl3vzqUhzh13OOvxkdE8pEfy"
-access_token = "1535457050-Ic7xQ3PsinpD3USly9O1PHvVbyfWNpB8gfzaxbJ"
-access_token_secret = "ZeWMu0R7iYwkZPEVpzM55rrRDNPtkkjWrC0aMRFSNOvFb"
+consumer_key = "..."
+consumer_secret = "..."
+access_token = "..."
+access_token_secret = "..."
 
 # Tweepy API
 auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
