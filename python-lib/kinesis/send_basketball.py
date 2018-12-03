@@ -10,10 +10,7 @@ class KinesisBasketballStreamer(object):
     def __init__(self):
         self.client = boto3.client(
             'kinesis',
-            region_name='us-west-2',
-            # Hard coded strings as credentials, not recommended.
-            aws_access_key_id='AKIAJELMQ3JQZM2D63SQ',
-            aws_secret_access_key='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'
+            region_name='us-west-2'
         )
         self.stream_msgs_sent = {}
 
