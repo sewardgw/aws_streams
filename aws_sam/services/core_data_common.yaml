@@ -1,0 +1,318 @@
+# This file maintains the core data common resources that are commonly shared across data pipeline use cases.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: The core data common resources that are commonly shared across data pipeline use cases.
+
+Parameters:
+  EnvStageName:
+    Type: String
+    Default: dev
+    Description: "The Environment name (e.g. dev, prod, etc.)"
+  Region:
+    Type: String
+    Default: us-west-2
+    Description: "The region to deploy the code to."
+
+Resources:
+
+  UpdatePartitionsLambdaRole:
+    Type: AWS::IAM::Role
+    Description: Role for updating existing Firehose with a Lamdba function.
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-UpdatePartitionsLambdaRole-${EnvStageName}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+
+  UpdateFirehoseLambdaRole:
+    Type: AWS::IAM::Role
+    Description: Role for updating existing Firehose with a Lamdba function.
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-UpdateFirehoseLambdaRole-${EnvStageName}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+
+  UpdateS3NotificationsLambdaRole:
+    Type: AWS::IAM::Role
+    Description: Role for updating existing Firehose with a Lamdba function.
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-UpdateS3NotificationsLambdaRole-${EnvStageName}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+
+  LambdaUpdateS3NotificationsPolicy:
+    # This policy updates Glue, however, it is done through using Athena Queries
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdateS3NotificationsLambdaRole
+    Description: Setting IAM Policy for updating S3 notification configs
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaUpdateS3NotificationsPolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # This function will be reused widely and has almost no risk of executing on resources that should not be executed on
+        - Effect: Allow
+          Action:
+          - s3:PutBucketNotification
+          Resource:
+          - arn:aws:s3:::*  # Any S3 Bucket in the account
+      Roles:
+        - !Ref UpdateS3NotificationsLambdaRole
+
+  LambdaLogPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdateFirehoseLambdaRole
+      - UpdatePartitionsLambdaRole
+      - UpdateS3NotificationsLambdaRole
+    Description: Setting IAM Policy for writing logs from Lambda
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaLogPolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Resource: arn:aws:logs:*:*:*
+      Roles:
+        - !Ref UpdateFirehoseLambdaRole
+        - !Ref UpdatePartitionsLambdaRole
+        - !Ref UpdateS3NotificationsLambdaRole
+
+  LambdaAthenaPolicy:
+    # This policy updates Glue, however, it is done through using Athena Queries
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdatePartitionsLambdaRole
+    Description: Setting IAM Policy for making select queries on Athena
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaAthenaPolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        Version: '2012-10-17'
+        Statement:
+          # This function will be reused widely and has almost no risk of executing on resources that should not be executed on
+        - Effect: Allow
+          Action:
+          - athena:*
+          Resource:
+          - "*"
+      Roles:
+        - !Ref UpdatePartitionsLambdaRole
+
+  LambdaGluePolicy:
+    # This policy updates Glue, however, it is done through using Athena Queries
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdatePartitionsLambdaRole
+    Description: Setting IAM Policy for updating Glue through Athena queries
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaGluePolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        Version: '2012-10-17'
+        Statement:
+          # This function will be reused widely and has almost no risk of executing on resources that should not be executed on
+        - Effect: Allow
+          Action:
+          - glue:*
+          Resource:
+          - "*"
+      Roles:
+        - !Ref UpdatePartitionsLambdaRole
+
+  LambdaWriteToS3Policy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdatePartitionsLambdaRole
+    Description: Setting IAM Policy for writing query output from Athena queries to S3
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaWriteToS3Policy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:ListBucket
+          - s3:GetBucketLocation
+          - s3:CreateBucket
+          - s3:PutObject
+          Resource:
+          - arn:aws:s3:::aws-athena-query-results-*
+      Roles:
+        - !Ref UpdatePartitionsLambdaRole
+
+  LambdaDescribeDeliveryStreamPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdateFirehoseLambdaRole
+    Description: Setting IAM Policy for describing delivery stream details.
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaDescribeDeliveryStreamPolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - firehose:DescribeDeliveryStream
+          - firehose:UpdateDestination
+          - firehose:CreateDeliveryStream
+          Resource:
+          - "*"
+      Roles:
+        - !Ref UpdateFirehoseLambdaRole
+
+  LambdaIamPassRolePolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdateFirehoseLambdaRole
+    Description: Setting IAM Policy for allowing other policies to be assigned systematically.
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaIamPassRolePolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - iam:PassRole
+          Resource:
+          - "*"
+      Roles:
+        - !Ref UpdateFirehoseLambdaRole
+
+  LambdaS3ListBucketPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdateFirehoseLambdaRole
+    Description: Setting IAM Policy for allowing core data lambda functions to list buckets.
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaS3ListBucketPolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:ListBucket
+          Resource:
+          - "*"
+      Roles:
+        - !Ref UpdateFirehoseLambdaRole
+
+  UpdatePartitionsLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-UpdatePartitionsLambdaFunction-${EnvStageName}"
+      Handler: addAthenaPartitions.lambda_handler
+      Runtime: python2.7
+      CodeUri: s3://mycodegoeshere/addAthenaPartitions.zip
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt UpdatePartitionsLambdaRole.Arn
+      Environment:
+        Variables:
+          var1: "sample value"
+      # VpcConfig:
+      #   SecurityGroupIds:
+      #     Ref: VPCSecurityGroupIDs
+      #   SubnetIds:
+      #     Ref: VPCSubnetIDs
+
+  UpdateFirehoseLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-UpdateFirehoseLambdaFunction-${EnvStageName}"
+      Handler: updateStreamSendExtendedDest.lambda_handler
+      Runtime: python2.7
+      CodeUri: s3://mycodegoeshere/updateStreamSendExtendedDest.zip
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt UpdateFirehoseLambdaRole.Arn
+      Environment:
+        Variables:
+          var1: "sample value"
+      # VpcConfig:
+      #   SecurityGroupIds:
+      #     Ref: VPCSecurityGroupIDs
+      #   SubnetIds:
+      #     Ref: VPCSubnetIDs
+
+  UpdateS3NotificationConfigsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-UpdateS3NotificationConfigsFunction-${EnvStageName}"
+      Handler: updateS3NotificationConfig.lambda_handler
+      Runtime: python2.7
+      CodeUri: s3://mycodegoeshere/updateS3NotificationConfig.zip
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt UpdateS3NotificationsLambdaRole.Arn
+      Environment:
+        Variables:
+          var1: "sample value"
+      # VpcConfig:
+      #   SecurityGroupIds:
+      #     Ref: VPCSecurityGroupIDs
+      #   SubnetIds:
+      #     Ref: VPCSubnetIDs
+
+
+Outputs:
+  LambdaFirehoseUpdaterArn:
+    Description: The Arn of the Lambda Funcion that updates a firehose.
+    Value: !GetAtt UpdateFirehoseLambdaFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UpdateFirehoseLambdaFunction-${EnvStageName}-Arn"
+  # LambdaFirehoseUpdaterName:
+  #   Description: The name of the Lambda Funcion that updates a firehose.
+  #   Value: !Sub "${AWS::StackName}-UpdateFirehoseLambdaFunction-${EnvStageName}"
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-UpdateFirehoseLambdaFunction-${EnvStageName}-Name"
+  LambdaPartitionUpdaterArn:
+    Description: The Arn of the Lambda Funcion that updates partitions in a Glue catalog after an S3 object creation event.
+    Value: !GetAtt UpdatePartitionsLambdaFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UpdatePartitionsLambdaFunction-${EnvStageName}-Arn"
+  # LambdaPartitionUpdaterName:
+  #   Description: The name of the Lambda Funcion that updates partitions in a Glue catalog after an S3 object creation event.
+  #   Value: !Sub "${AWS::StackName}-UpdatePartitionsLambdaFunction-${EnvStageName}"
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-UpdatePartitionsLambdaFunction-${EnvStageName}-Name"
+  LambdaS3NotificationConfigUpdaterArn:
+    Description: The Arn of the Lambda Funcion that updates S3 Notification delivery options.
+    Value: !GetAtt UpdateS3NotificationConfigsFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UpdateS3NotificationConfigsFunction-${EnvStageName}-Arn"
+  # LambdaS3NotificationConfigUpdaterName:
+  #   Description: The name of the Lambda Funcion that updates S3 Notification delivery options.
+  #   Value: !Sub "${AWS::StackName}-UpdatePartitionsLambdaFunction-${EnvStageName}"
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-UpdateS3NotificationConfigsFunction-${EnvStageName}-Name"

@@ -1,0 +1,493 @@
+# This file deploys all of the services for an end-to-end data pipeline including:
+# 1) A data stream
+# 2) A Firehose consumer that writes to S3 for both raw data as well as pre-defined parquet tables
+# 3) A Glue Database where the new tables are deployed
+# 4) Two new tables - one raw JSON and another in parquet from the stream
+# 5) A Glue crawler to update the schemas and partitions -- (TBD) scheduled to run daily
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: A deployable data pipeline that consumes data from Kinesis and persists it in S3 and creates corresponding tables in Glue.
+
+Parameters:
+  EnvStageName:
+    Type: String
+    Default: dev
+    Description: "The API Gateway Stage name (e.g. dev, prod, etc.)"
+  ApplicationName:
+    Type: String
+    Default: "Streaming data pipeline"
+    Description: "Streaming data pipeline name"
+  OutputBucketName:
+    Type: String
+    Default: cf-data
+    Description: "The name of the output bucket where the data."
+  OutputDatabaseName:
+    Type: String
+    Default: dev_cf_data
+    Description: "The name of the output database that will be accessible to Athena."
+  S3BucketKeyPrefix:
+    Type: String
+    Default: bball-user
+    Description: "The prefixes for the key that will be persisted in the specified bucket."
+  GlueTableName:
+    Type: String
+    Default: bball_user
+    Description: "The name of the table in the Glue catalog. This will be the name of the table when queried."
+  OwnerGroupName:
+    Type: String
+    Default: cf_core
+    Description: "The group that Owns the Process"
+  CoreDataCommonStack:
+    Type: String
+    Default: core-data-common
+    Description: "The name of the core data common stack that contains the resources required for reuse."
+  Region:
+    Type: String
+    Default: us-west-2
+    Description: "The region to deploy the code to."
+
+Resources:
+
+  GlueSchemaReadAccessPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - KinesisFireHoseToS3Role
+      - ParquetDataTable
+      - RawDataTable
+      - GlueDatabase
+    Description: Setting IAM Policy for reading schemas from Glue
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-GlueSchemaReadAccessPolicy-${EnvStageName}"
+      PolicyDocument:
+        Statement:
+          - Action:
+              - glue:GetTableVersions
+            Effect: Allow
+            Resource:
+              - '*'
+      Roles:
+        - !Ref KinesisFireHoseToS3Role
+
+  ReadKinesisPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - KinesisFireHoseToS3Role
+      - KinesisStream
+    Description: Setting IAM Policy for reading data from Kinesis
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-ReadKinesisPolicy-${EnvStageName}"
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - "kinesis:Get*"
+              - "kinesis:DescribeStream"
+            Resource:
+              - !GetAtt KinesisStream.Arn
+      Roles:
+        - !Ref KinesisFireHoseToS3Role
+
+  S3ReadAccessPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - GlueReadS3Role
+      - KinesisFireHoseToS3Role
+      # - DeliveryBucket
+    Description: Setting IAM Policy for reading data from S3
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-S3ReadAccessPolicy-${EnvStageName}"
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "s3:ListBucket"
+            Effect: "Allow"
+            Resource: arn:aws:s3:::dev-cf-data # The bucket and everything under the bucket
+              # - !GetAtt DeliveryBucket.Arn
+          - Action:
+              - "s3:GetObject"
+            Effect: "Allow"
+            Resource:
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - dev-cf-data #!Ref DeliveryBucket
+                  - '*'
+      Roles:
+        - !Ref GlueReadS3Role
+        - !Ref KinesisFireHoseToS3Role
+
+  S3WriteAccessPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - KinesisFireHoseToS3Role
+      # - DeliveryBucket
+    Description: Setting IAM Policy for writing data to S3
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-S3WriteAccessPolicy-${EnvStageName}"
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "s3:GetObject"
+              - "s3:DeleteObject"
+              - "s3:PutObject"
+            Effect: "Allow"
+            Resource: arn:aws:s3:::dev-cf-data # The bucket and everything under the bucket
+              # - !GetAtt DeliveryBucket.Arn
+          - Action:
+              - "s3:GetObject"
+              - "s3:PutObject"
+            Effect: "Allow"
+            Resource:
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - dev-cf-data # !Ref DeliveryBucket
+                  - '*'
+      Roles:
+        - !Ref KinesisFireHoseToS3Role
+
+  # Kinesis to S3 Role
+  KinesisFireHoseToS3Role:
+    Type: AWS::IAM::Role
+    Description: Role for delivering data from Kinesis to S3
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-KinesisFireHoseToS3Role-${EnvStageName}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+
+  GlueReadS3Role:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-GlueReadS3Role-${EnvStageName}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - glue.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+
+  # Delivery bucket for all events, parquet and raw
+  # DeliveryBucket:
+  #   Type: AWS::S3::Bucket
+  #   Properties:
+  #     BucketName: !Sub "${OutputBucketName}"
+  #
+  # BucketPermission:
+  #   Type: AWS::Lambda::Permission
+  #   DependsOn:
+  #     - DeliveryBucket
+  #   Properties:
+  #     Action: 'lambda:InvokeFunction'
+  #     FunctionName:
+  #       Fn::ImportValue: core-data-common-UpdatePartitionsLambdaFunction-dev-Arn
+  #         # - Fn::Join:
+  #         #   - "-"
+  #         #   - - !Ref CoreDataCommonStack
+  #         #     - UpdateFirehoseLambdaFunction
+  #         #     - !Ref EnvStageName
+  #         #     - Arn
+  #       # Fn::ImportValue:
+  #       #   - !Sub "core-data-common-UpdatePartitionsLambdaFunction-${EnvStageName}-Name"
+  #     Principal: s3.amazonaws.com
+  #     SourceAccount: !Ref "AWS::AccountId"
+  #     SourceArn: !GetAtt DeliveryBucket.Arn
+
+  # Kinesis Stream
+  KinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      ShardCount: 1
+      Name: "TwitterBBallUserStream"
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref OutputDatabaseName
+        Description: "Database for Glue schemas for the basketball users."
+
+  RawDataTable:
+    Type: AWS::Glue::Table
+    DependsOn:
+      - GlueDatabase
+    Properties:
+      TableInput:
+        Name: !Sub "${GlueTableName}_raw"
+        Owner: !Ref OwnerGroupName
+        PartitionKeys:
+        - Type: int
+          Name: year
+        - Type: int
+          Name: month
+        - Type: int
+          Name: day
+        - Type: int
+          Name: hour
+        StorageDescriptor:
+          Columns:
+          - Type: string
+            Name: tz
+          - Type: string
+            Name: name
+          - Type: string
+            Name: created_at
+          - Type: string
+            Name: location
+          - Type: int
+            Name: user_age_at_post
+          - Type: boolean
+            Name: verified
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          Location: !Join
+            - "/"
+            - - "s3:/"
+              - !Sub "${EnvStageName}-${OutputBucketName}"
+              - !Sub "${S3BucketKeyPrefix}-raw"
+            # !Sub "s3://${OutputBucketName}/${S3BucketKeyPrefix}-raw"
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+            Parameters:
+              paths: created_at,location,name,tz,user_age_at_post,verified
+          SortColumns: []
+          BucketColumns: []
+          NumberOfBuckets: -1
+          StoredAsSubDirectories: false
+          Compressed: false
+          Parameters:
+            classification: json
+        TableType: EXTERNAL_TABLE
+        Retention: 0
+      DatabaseName: !Ref OutputDatabaseName
+      CatalogId: !Ref AWS::AccountId
+
+  ParquetDataTable:
+    Type: AWS::Glue::Table
+    DependsOn:
+      - GlueDatabase
+    Properties:
+      TableInput:
+        Name: !Ref GlueTableName
+        Owner: !Ref OwnerGroupName
+        PartitionKeys:
+        - Type: int
+          Name: year
+        - Type: int
+          Name: month
+        - Type: int
+          Name: day
+        - Type: int
+          Name: hour
+        StorageDescriptor:
+          Columns:
+          - Type: string
+            Name: tz
+          - Type: string
+            Name: name
+          - Type: string
+            Name: created_at
+          - Type: string
+            Name: location
+          - Type: int
+            Name: user_age_at_post
+          - Type: boolean
+            Name: verified
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          Location: !Join
+            - "/"
+            - - "s3:/"
+              - !Sub "${EnvStageName}-${OutputBucketName}"
+              - !Sub "${S3BucketKeyPrefix}"
+            #!Sub "s3://${OutputBucketName}/${S3BucketKeyPrefix}"  # This is the pysical location of the table
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+            Parameters:
+              serialization.format: '1'
+          SortColumns: []
+          BucketColumns: []
+          NumberOfBuckets: -1
+          StoredAsSubDirectories: false
+          Compressed: false
+          Parameters:
+            classification: parquet
+        Parameters:
+          classification: parquet
+        TableType: EXTERNAL_TABLE
+        Retention: 0
+      DatabaseName: !Ref OutputDatabaseName
+      CatalogId: !Ref AWS::AccountId
+
+
+  # Kinesis to S3 Delivery
+  KinesisToS3FirehoseResource:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    DependsOn:
+      - S3WriteAccessPolicy
+      - ReadKinesisPolicy
+    Properties:
+      DeliveryStreamName: !Sub "${AWS::StackName}-KinesisToS3FirehoseResource-${EnvStageName}"
+      DeliveryStreamType: KinesisStreamAsSource
+      KinesisStreamSourceConfiguration:
+        KinesisStreamARN: !GetAtt KinesisStream.Arn
+        RoleARN: !GetAtt KinesisFireHoseToS3Role.Arn
+      ExtendedS3DestinationConfiguration:
+        BucketARN: arn:aws:s3:::dev-cf-data  #!GetAtt DeliveryBucket.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 10
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogStreamName: S3Delivery
+          LogGroupName: "/aws/kinesisfirehose/stream-log-watch-fix-me"
+        CompressionFormat: UNCOMPRESSED
+        Prefix: !Sub "${S3BucketKeyPrefix}-tmp/"
+        ProcessingConfiguration:
+          Enabled: false
+          Processors: []
+        RoleARN: !GetAtt KinesisFireHoseToS3Role.Arn
+
+  S3Crawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub ${OutputDatabaseName}.${GlueTableName}-Crawler
+      Role: !GetAtt GlueReadS3Role.Arn
+      Description: !Sub "S3 Crawler to create schemas and partitions for {AWS::StackName}"
+      DatabaseName: !Ref OutputDatabaseName
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: DELETE_FROM_DATABASE
+      Configuration: '{
+              "Version": 1.0,
+              "CrawlerOutput": {
+                 "Partitions": { "AddOrUpdateBehavior": "InheritFromTable" },
+                 "Tables": {"AddOrUpdateBehavior": "MergeNewColumns" }
+                 }
+            }'
+      Targets:
+        S3Targets:
+          - Path: !Join
+            - "/"
+            - - "s3:/"
+              - !Sub "${EnvStageName}-${OutputBucketName}"
+              - !Sub "${S3BucketKeyPrefix}"
+            #!Sub "s3://${OutputBucketName}/${S3BucketKeyPrefix}/"
+          - Path: !Join
+            - "/"
+            - - "s3:/"
+              - !Sub "${EnvStageName}-${OutputBucketName}"
+              - !Sub "${S3BucketKeyPrefix}-raw"
+            #!Sub "s3://${OutputBucketName}/${S3BucketKeyPrefix}-raw/"
+
+  UpdateFirehoseToParquetAndRaw:  # The SAM/CFT scripts do not currently allow stream configuration with GLUE, it will be set here
+    Type: Custom::LambdaCallout
+    DependsOn:
+      - RawDataTable
+      - ParquetDataTable
+      - KinesisToS3FirehoseResource
+    Properties:
+      ServiceToken:
+        # This is the name that is outputted from the core-data-common stack,
+        # contains the Lambda function to update the Firehose Delivery
+        Fn::ImportValue: core-data-common-UpdateFirehoseLambdaFunction-dev-Arn
+      region:
+        Ref: Region
+      firehose_name:
+        Ref: KinesisToS3FirehoseResource
+      ext_dest_str: !Sub
+        - >
+            {
+               "DataFormatConversionConfiguration": {
+                     "OutputFormatConfiguration": {
+                         "Serializer": {
+                             "ParquetSerDe": {}
+                         }
+                     },
+                     "SchemaConfiguration": {
+                         "RoleARN": "${KinesisFireHoseToS3Role.Arn}",
+                         "TableName": "${GlueTableName}",
+                         "Region": "${Region}",
+                         "DatabaseName": "${OutputDatabaseName}",
+                         "VersionId": "LATEST"
+                     },
+                     "Enabled": true,
+                     "InputFormatConfiguration": {
+                         "Deserializer": {
+                             "OpenXJsonSerDe": {}
+                         }
+                     }
+                 },
+                 "RoleARN": "${KinesisFireHoseToS3Role.Arn}",
+                 "Prefix": "${S3BucketKeyPrefix}/",
+                 "BufferingHints": {
+                     "IntervalInSeconds": 60,
+                     "SizeInMBs": 128
+                 },
+                 "EncryptionConfiguration": {
+                     "NoEncryptionConfig": "NoEncryption"
+                 },
+                 "CompressionFormat": "UNCOMPRESSED",
+                 "S3BackupMode": "Enabled",
+                 "CloudWatchLoggingOptions": {
+                     "Enabled": true,
+                     "LogStreamName": "S3Delivery",
+                     "LogGroupName": "/aws/kinesisfirehose/${S3BucketKeyPrefix}"
+                 },
+                 "BucketARN": "${DeliveryBucketArn}",
+                 "ProcessingConfiguration": {
+                     "Enabled": false,
+                     "Processors": []
+                 },
+                 "S3BackupMode": "Enabled",
+                 "S3BackupUpdate": {
+                     "RoleARN": "${KinesisFireHoseToS3Role.Arn}",
+                     "BucketARN": "${DeliveryBucketArn}",
+                     "Prefix": "${S3BucketKeyPrefix}-raw/",
+                     "BufferingHints": {
+                         "SizeInMBs": 123,
+                         "IntervalInSeconds": 123
+                     },
+                     "CompressionFormat": "GZIP",
+                     "EncryptionConfiguration": {
+                         "NoEncryptionConfig": "NoEncryption"
+                     },
+                     "CloudWatchLoggingOptions": {
+                         "Enabled": false
+                     }
+                 }
+              }
+        - DeliveryBucketArn: !ImportValue core-data-buckets-OutputBucketArn-dev-Arn
+
+  # UpdateS3DeliveryNotifications:  # There is a race condition that prevents delivery notifications from being set up at the same times as bucket.
+  #   Type: Custom::LambdaCallout
+  #   DependsOn:
+  #     - DeliveryBucket
+  #     - BucketPermission
+  #   Properties:
+  #     ServiceToken:
+  #       # This is the name that is outputted from the core-data-common stack,
+  #       # contains the Lambda function to update the Firehose Delivery
+  #       Fn::ImportValue: core-data-common-UpdateS3NotificationConfigsFunction-dev-Arn
+  #     bucket:
+  #       Ref: OutputBucketName
+  #     notification_configs: >
+  #           {"LambdaFunctionConfigurations": [
+  #                     {
+  #                         "LambdaFunctionArn": "arn:aws:lambda:us-west-2:652741540129:function:core-data-common-UpdatePartitionsLambdaFunction-dev",
+  #                         "Events": ["s3:ObjectCreated:*"]
+  #                     }
+  #                 ]
+  #
+  #           }

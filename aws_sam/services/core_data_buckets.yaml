@@ -1,0 +1,145 @@
+# This file maintains the core data common resources that are commonly shared across data pipeline use cases.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: The core data common resources that are commonly shared across data pipeline use cases.
+
+Parameters:
+  EnvStageName:
+    Type: String
+    Default: dev
+    Description: "The Environment name (e.g. dev, prod, etc.)"
+  TopicName:
+    Type: String
+    Default: cf-data-topic
+  BucketName:
+    Type: String
+    Default: cf-data
+    Description: "The name of the bucket."
+  Region:
+    Type: String
+    Default: us-west-2
+    Description: "The region to deploy the code to."
+  CoreDataCommonStackName:
+    Type: String
+    Default: core-data-common
+    Description: "The name of the core data common lambda functions used to set bucket permissions."
+  UpdatePartitionsLambdaFunctionName:
+    Type: String
+    Default: UpdatePartitionsLambdaFunction
+    Description: "The logical name of the lambda function that contains the update to enable partitoins to be created when an S3 event occurs."
+
+Resources:
+
+  # Topic where all bucket creation events will be delivered
+  BucketDeliveryTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: !Ref TopicName
+      Subscription:
+        - Protocol: lambda
+          Endpoint:
+            Fn::ImportValue: !Join
+              - "-"
+              - - !Ref CoreDataCommonStackName
+                - !Ref UpdatePartitionsLambdaFunctionName
+                - !Ref EnvStageName
+                - Arn
+
+  SNSTopicPolicy:
+    Type: 'AWS::SNS::TopicPolicy'
+    DependsOn:
+      - BucketDeliveryTopic
+      - DeliveryBucket
+    Properties:
+      Topics:
+        - !Ref BucketDeliveryTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: 'sns:Publish'
+            Resource: !Ref BucketDeliveryTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !GetAtt DeliveryBucket.Arn
+            Principal:
+              AWS: '*'
+
+  # Delivery bucket for all events, parquet and raw
+  DeliveryBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+        - "-"
+        - - !Ref EnvStageName
+          - !Ref BucketName #!Sub "cf-data-${EnvStageName}" #!Sub "${OutputBucketName}"
+      # NotificationConfiguration:
+      #   TopicConfigurations:
+      #     - Topic: !Ref BucketDeliveryTopic
+      #       Event: 's3:ObjectCreated:*'
+
+  #
+  # BucketPermission:
+  #   Type: AWS::Lambda::Permission
+  #   DependsOn:
+  #     - DeliveryBucket
+  #   Properties:
+  #     Action: 'lambda:InvokeFunction'
+  #     FunctionName:
+  #       Fn::ImportValue: !Join
+  #         - "-"
+  #         - - !Ref CoreDataCommonStackName
+  #           - !Ref UpdatePartitionsLambdaFunctionName
+  #           - !Ref EnvStageName
+  #           - Arn
+  #       #core-data-common-UpdatePartitionsLambdaFunction-dev-Arn
+  #         # - Fn::Join:
+  #         #   - "-"
+  #         #   - - !Ref CoreDataCommonStack
+  #         #     - UpdateFirehoseLambdaFunction
+  #         #     - !Ref EnvStageName
+  #         #     - Arn
+  #       # Fn::ImportValue:
+  #       #   - !Sub "core-data-common-UpdatePartitionsLambdaFunction-${EnvStageName}-Name"
+  #     Principal: s3.amazonaws.com
+  #     SourceAccount: !Ref "AWS::AccountId"
+  #     SourceArn: !GetAtt DeliveryBucket.Arn
+
+  UpdateS3DeliveryNotifications:  # There is a race condition that prevents delivery notifications from being set up at the same times as bucket.
+    Type: Custom::LambdaCallout
+    DependsOn:
+      - DeliveryBucket
+      - BucketDeliveryTopic
+    Properties:
+      ServiceToken:
+        # This is the name that is outputted from the core-data-common stack,
+        # contains the Lambda function to update the Firehose Delivery
+        Fn::ImportValue: core-data-common-UpdateS3NotificationConfigsFunction-dev-Arn
+      bucket:
+        Ref: DeliveryBucket
+      notification_configs: !Sub
+        - >
+            {"TopicConfigurations": [
+                      {
+                          "TopicArn": "${BucketTopicArn}",
+                          "Events": ["s3:ObjectCreated:*"]
+                      }
+                  ]
+            }
+        - BucketTopicArn: !Ref BucketDeliveryTopic
+
+Outputs:
+  OutputBucketArn:
+    Description: The Arn of the output bucket.
+    Value: !GetAtt DeliveryBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-OutputBucketArn-${EnvStageName}-Arn"
+  OutputBucketName:
+    Description: The name of the output bucket
+    Value: !Join
+      - "-"
+      - - !Ref EnvStageName
+        - !Ref BucketName
+    Export:
+      Name: !Sub "${AWS::StackName}-OutputBucketArn-${EnvStageName}-BucketName"

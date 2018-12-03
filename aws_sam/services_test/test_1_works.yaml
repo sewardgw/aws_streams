@@ -1,0 +1,116 @@
+# TODO:
+#  1) Deploy to dev, test, prod
+#  2) Be able to access existing ARNs from existing services not in current script
+#  3) Write data as parquet
+#  4) Create parquet files in s3
+#  5) Test with SAM CLI - "sam --version"
+#  6) Pass in sensistive data via env variables (and where to persist those)
+#  7) Best practices for using AWS buckets - use one? use many? some combination?
+#  8) What is catalog id?
+#  9) How to ensure that data won't get deleted if something is accidently removed
+#  10) How does Lambda tests / logging work?
+#  11) Test cases for Lambda
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: First Try at building from CFT
+
+Parameters:
+  ApiStageName:
+    Type: String
+    Default: dev
+    Description: "The API Gateway Stage name (e.g. dev, prod, etc.)"
+  ApplicationName:
+    Type: String
+    Default: "Streaming data pipeline"
+    Description: "Streaming data pipeline name"
+
+Resources:
+
+  # Lambda function
+  addRandomValue:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: addRandomVal.lambda_handler
+      Runtime: python2.7
+      CodeUri: s3://mycodegoeshere/addRandom.zip
+      MemorySize: 128
+      Timeout: 3
+      Events:
+        Kinesis1RandValStream:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt KinesisStream1.Arn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 100
+
+  # Kinesis Stream
+  KinesisStream1:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      ShardCount: 1
+
+  # Kinesis to S3 Delivery
+  DeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    DependsOn: KinesisS3WritePolicy
+    Properties:
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        Prefix: "firehose/" #!Ref FirehoseS3Prefix
+        BucketARN: !GetAtt DeliveryBucket.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 10
+        CompressionFormat: UNCOMPRESSED
+        RoleARN: !GetAtt KinesisPipelineRole.Arn
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !GetAtt addRandomValue.Arn
+
+  # Kinesis to S3 Role
+  KinesisPipelineRole:
+    Type: AWS::IAM::Role
+    Description: Role for delivering data from Kinesis to S3
+    Properties:
+      RoleName: "KinesisPipelineRoleTest1"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+
+  # Kinesis to S3 Policy
+  KinesisS3WritePolicy:
+    Type: AWS::IAM::Policy
+    DependsOn: KinesisPipelineRole
+    Description: Setting IAM Policy for the KinesisPipelineRole Policy
+    Properties:
+      PolicyName: KinesisS3WritePolicy
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - arn:aws:s3:::dogsname1
+              - arn:aws:s3:::dogsname1/*
+              - arn:aws:s3:::%FIREHOSE_BUCKET_NAME%
+              - arn:aws:s3:::%FIREHOSE_BUCKET_NAME%/*
+      Roles: [!Ref KinesisPipelineRole]
+
+  # Delivery Bucket in S3
+  DeliveryBucket:
+    Type: AWS::S3::Bucket
+    # BucketName: 'FIREHOSE_BUCKET_TEST'

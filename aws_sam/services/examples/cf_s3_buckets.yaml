@@ -1,0 +1,41 @@
+# This template only creates buckets in S3
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Creates an S3 Bucket. This is separated from other scripts to provide long-term storage.
+
+Parameters:
+  ApiStageName:
+    Type: String
+    Default: dev
+    Description: "The API Gateway Stage name (e.g. dev, prod, etc.)"
+  CreatedBucketName:
+    Type: String
+    Default: "cf-default-bucket"
+    Description: "Bucket Name for Streaming Data to be Persisted"
+
+Resources:
+  # Delivery Bucket in S3
+  DeliveryBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      AccessControl: Private
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      BucketName: !Ref CreatedBucketName
+      Tags:
+        - Key: "bucket_key"
+          Value: "bucket_tag"
+      VersioningConfiguration:
+        Status: Enabled
+
+Outputs:
+  BucketName:
+    Description: The bucket where data will be stored
+    Value: !Ref DeliveryBucket
+  BucketArn:
+    Description: The Arn of the bucket
+    Value: Fn::GetAtt DeliveryBucket.Arn

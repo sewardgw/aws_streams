@@ -1,0 +1,135 @@
+# This file will deploy a Lambda function which can be used to update a firehose delivery service
+# by passing in additional extended destination configurations to the firehose.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: This deploys a Lambda function that updates the partitions in Glue based off of the creation of a new S3 object created in the underlying S3 Bucket.
+
+Parameters:
+  EnvStageName:
+    Type: String
+    Default: dev
+    Description: "The Environment name (e.g. dev, prod, etc.)"
+  ApplicationName:
+    Type: String
+    Default: "Glue Partition Updater"
+    Description: "A Lambda function which can be used to add new partitions to the Glue catalog."
+  Region:
+    Type: String
+    Default: us-west-2
+    Description: "The region to deploy the code to."
+
+Resources:
+
+  LambdaLogPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdatePartitionsLambdaRole
+    Description: Setting IAM Policy for writing logs from Lambda
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaLogPolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Resource: arn:aws:logs:*:*:*
+      Roles:
+        - !Ref UpdatePartitionsLambdaRole
+
+  LambdaUpdateGluePolicy:
+    # This policy updates Glue, however, it is done through using Athena Queries
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdatePartitionsLambdaRole
+    Description: Setting IAM Policy for updating Glue through Athena queries
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaUpdateGluePolicy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        Version: '2012-10-17'
+        Statement:
+          # This function will be reused widely and has almost no risk of executing on resources that should not be executed on
+        - Effect: Allow
+          Action:
+          - athena:*
+          Resource:
+          - "*"
+      Roles:
+        - !Ref UpdatePartitionsLambdaRole
+
+  LambdaWriteToS3Policy:
+    # This policy updates Glue, however, it is done through using Athena Queries
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - UpdatePartitionsLambdaRole
+    Description: Setting IAM Policy for writing query output from Athena queries to S3
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-LambdaWriteToS3Policy-${EnvStageName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # This function will be reused widely and has almost no risk of executing on resources that should not be executed on
+        - Effect: Allow
+          Action:
+          - s3:GetBucketLocation
+          - s3:CreateBucket
+          - s3:PutObject
+          Resource:
+          - arn:aws:s3:::aws-athena-query-results-*
+      Roles:
+        - !Ref UpdatePartitionsLambdaRole
+
+
+
+  UpdatePartitionsLambdaRole:
+    Type: AWS::IAM::Role
+    Description: Role for updating existing Firehose with a Lamdba function.
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-UpdatePartitionsLambdaRole-${EnvStageName}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+
+
+  UpdatePartitionsLambdaRole:
+    Type: AWS::IAM::Role
+    Description: Role for updating existing Firehose with a Lamdba function.
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-UpdatePartitionsLambdaRole-${EnvStageName}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+
+  UpdatePartitionsLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-UpdatePartitionsLambdaFunction-${EnvStageName}"
+      Handler: addAthenaPartitions.lambda_handler
+      Runtime: python2.7
+      CodeUri: s3://mycodegoeshere/addAthenaPartitions.zip
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt UpdatePartitionsLambdaRole.Arn
+      Environment:
+        Variables:
+          var1: "sample value"
+
+Outputs:
+  LambdaPartitionUpdater:
+    Description: Lambda Funcion that updates partitions in a Glue catalog after an S3 object creation event.
+    Value: !GetAtt UpdatePartitionsLambdaFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-UpdatePartitionsLambdaFunction-${EnvStageName}"
