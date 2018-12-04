@@ -191,7 +191,7 @@ BUCKET = 'aws-athena-query-results-652741540129-us-west-2'
 OBJ_BUCKET = 'dev-cf-data'
 OBJECT_KEY = 'bball-user/2018/11/22/14/pl-deploy-KinesisToS3FirehoseResource-dev-2-2018-11-22-14-16-07-83683207-e068-4410-b622-c5198189c13f.parquet'
 
-bucket = boto3.resource('s3', aws_access_key_id='AKIAJR2EUO62XEZRJ27Q', aws_secret_access_key='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').Bucket(OBJ_BUCKET)
+bucket = boto3.resource('s3').Bucket(OBJ_BUCKET)
 obj = bucket.Object(OBJECT_KEY)
 
 import io
